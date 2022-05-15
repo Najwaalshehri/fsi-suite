@@ -32,6 +32,8 @@
 #include <deal.II/dofs/dof_renumbering.h>
 
 #include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_system.h>
 #include <deal.II/fe/fe_interface_values.h>
 #include <deal.II/fe/fe_tools.h>
 
@@ -42,10 +44,12 @@
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/linear_operator_tools.h>
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/sparse_direct.h>
 
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
@@ -129,22 +133,26 @@ private:
   void make_grid_omega2();
   void setup_system_omega();
   void setup_system_omega2();
+  void setup_coupling();
   void assemble_system_omega();
-  void assemble_system_omega2();   
+  void assemble_system_omega2();  
+  void assemble_coupling_system(); 
 
   void solve_u1();
   void solve_u2();
+  void solve_coupling();
   // void mark(const Vector<float> &error_per_cell_omega);
   void refine_omega();
   void refine_omega2();
   void output_results(const unsigned int cycle) const;
 
   Triangulation<dim> triangulation_omega;
+  GridTools::Cache<dim, dim> space_grid_tools_cache;
   Triangulation<dim> triangulation_omega2;
   FE_Q<dim>       fe;
-  FE_Q<dim>       fe_iv1;
-  FE_Q<dim>       fe2;
-  FE_Q<dim>       fe_iv2;
+  // FE_Q<dim>       fe_iv1;
+  FESystem<dim>       fe2;
+  // FESystem<dim>       fe_iv2;
   DoFHandler<dim> omega_dh;
   DoFHandler<dim> omega2_dh;
   AffineConstraints<double> constraints;
@@ -154,6 +162,10 @@ private:
   SparsityPattern      sparsity_pattern_omega;
   SparseMatrix<double> A_omega2;
   SparsityPattern      sparsity_pattern_omega2;
+  SparsityPattern      coupling_sparsity;
+  SparseMatrix<double> coupling_matrix;
+
+
   
 
   Vector<double> u_omega;
@@ -164,11 +176,12 @@ private:
   Vector<double> error_per_cell_omega2;
   
   
-  double coefficient_omega =100.0;
+  double coefficient_omega = 1.0;
   // const unsigned int degree_omega;
-  double coefficient_omega2 =1.0;
+  double coefficient_omega2 = 2.0;
   // const unsigned int degree_omega2;
-
+  const FEValuesExtractors::Scalar primal;
+  const FEValuesExtractors::Scalar multiplier;
   
   //omega2:
   //       /**
@@ -196,12 +209,15 @@ template <int dim>
 Step6<dim>::Step6()
   // : degree_omega(degree_omega)
   // , degree_omega2(degree_omega2)
-  : fe(1)
-  , fe_iv1(1)
-  , fe2(1)
-  , fe_iv2(1)
+  : space_grid_tools_cache(triangulation_omega)
+  , fe(1)
+  // , fe_iv1(1)
+  , fe2(FE_Q<dim>(1), 1, FE_Q<dim>(1), 1)
+  // , fe_iv2(1)
   , omega_dh(triangulation_omega)
   , omega2_dh(triangulation_omega2)
+  , primal(0)
+  , multiplier(1)
 {
 //   this->add_parameter("Number of cycles", n_cycles);
 }
@@ -256,14 +272,14 @@ template <int dim>
 void Step6<dim>::setup_system_omega2()
 {
   omega2_dh.distribute_dofs(fe2);
-
+  DoFRenumbering::component_wise(omega2_dh);
   constraints2.clear();
   DoFTools::make_hanging_node_constraints(omega2_dh, constraints2);
 
-  VectorTools::interpolate_boundary_values(omega2_dh,
-                                           0,
-                                           Functions::ZeroFunction<dim>(),
-                                           constraints2);
+  // VectorTools::interpolate_boundary_values(omega2_dh,
+  //                                          0,
+  //                                          Functions::ZeroFunction<dim>(2),
+  //                                          constraints2);
   constraints2.close();
   DynamicSparsityPattern dsp(omega2_dh.n_dofs(),omega2_dh.n_dofs());
   DoFTools::make_sparsity_pattern(omega2_dh,
@@ -278,6 +294,28 @@ void Step6<dim>::setup_system_omega2()
 
   deallog << "Omega2 dofs: " << omega2_dh.n_dofs() << std::endl;
 }
+
+template <int dim>
+  void Step6<dim>::setup_coupling()
+  {
+    // TimerOutput::Scope timer_section(monitor, "Setup coupling");
+
+    QGauss<dim> quad(3);
+
+    DynamicSparsityPattern dsp(omega_dh.n_dofs(), omega2_dh.n_dofs());
+
+    NonMatching::create_coupling_sparsity_pattern(space_grid_tools_cache,
+                                                  omega_dh,
+                                                  omega2_dh,
+                                                  quad,
+                                                  dsp,
+                                                  AffineConstraints<double>(),
+                                                  ComponentMask(),    // for coupling  u_omega
+                                                  ComponentMask(0,1) //with lambda
+    );
+    coupling_sparsity.copy_from(dsp);
+    coupling_matrix.reinit(coupling_sparsity);
+  }
 
 template <int dim>
 void Step6<dim>::assemble_system_one_cell_omega(
@@ -336,12 +374,20 @@ void Step6<dim>::assemble_system_one_cell_omega2(
       for (const unsigned int i : fe_values.dof_indices())
         for (const unsigned int j : fe_values.dof_indices())
           cell_matrix(i, j) +=
-            (coefficient_omega2 *                            // a(x_q)
-              fe_values.shape_grad(i, q_index) *       // grad phi_i(x_q)
-              fe_values.shape_grad(j, q_index) *       // grad phi_j(x_q)
-              fe_values.JxW(q_index));                 // dx
+            ((coefficient_omega2 *                            // a(x_q)
+              fe_values[primal].gradient(i, q_index) *       // grad phi_i(x_q)
+              fe_values[primal].gradient(j, q_index))        // grad phi_j(x_q)
+
+              +(fe_values[primal].value(i, q_index) *       // grad phi_i(x_q)
+                fe_values[multiplier].value(j, q_index) )       // grad phi_j(x_q)
+
+              +(fe_values[multiplier].value(i, q_index) *       // grad phi_i(x_q)
+              fe_values[primal].value(j, q_index) )       // grad phi_j(x_q)
+
+            )* fe_values.JxW(q_index);                 // dx
+
       for (const unsigned int i : fe_values.dof_indices())
-        cell_rhs(i) += (fe_values.shape_value(i, q_index) *   // phi_i(x_q)
+        cell_rhs(i) += (fe_values[primal].value(i, q_index) *   // phi_i(x_q)
                         1.0 *                                 // f(x)
                         fe_values.JxW(q_index));              // dx
     }
@@ -749,6 +795,22 @@ void Step6<dim>::assemble_system_omega2()
   rhs_omega2.compress(VectorOperation::add);
 }
 
+template<int dim>
+void Step6<dim>::assemble_coupling_system()
+{
+  // TimerOutput::Scope timer_section(monitor, "Assemble coupling system");
+
+  QGauss<dim> quad(3);
+  NonMatching::create_coupling_mass_matrix(space_grid_tools_cache,
+                                            omega_dh,
+                                            omega2_dh,
+                                            quad,
+                                            coupling_matrix,
+                                            AffineConstraints<double>(),
+                                            ComponentMask(),
+                                            ComponentMask(0,1)
+  );
+}
 
 template <int dim>
 void Step6<dim>::solve_u1()
@@ -767,15 +829,77 @@ void Step6<dim>::solve_u1()
 template <int dim>
 void Step6<dim>::solve_u2()
 {
-  SolverControl            solver_control(1000, 1e-12);
-  SolverCG<Vector<double>> solver(solver_control);
+  // SolverControl            solver_control(1000, 1e-12);
+  // SolverCG<Vector<double>> solver(solver_control);
 
-  PreconditionSSOR<SparseMatrix<double>> preconditioner2;
-  preconditioner2.initialize(A_omega2, 1.2);
-
-  solver.solve(A_omega2, u_omega2, rhs_omega2, preconditioner2);
+  // PreconditionSSOR<SparseMatrix<double>> preconditioner2;
+  // preconditioner2.initialize(A_omega2, 1.2);
+  SparseDirectUMFPACK solver;
+  solver.initialize(A_omega2);
+  solver.vmult(u_omega2, rhs_omega2);
+  // solver.solve(A_omega2, u_omega2, rhs_omega2, preconditioner2);
 
   constraints2.distribute(u_omega2);
+}
+
+template <int dim>
+void Step6<dim>::solve_coupling()
+{
+  /// Start by creating the inverse stiffness matrix
+    SparseDirectUMFPACK A_omega_inv_umfpack;
+    A_omega_inv_umfpack.initialize(A_omega);
+    SparseDirectUMFPACK A_omega2_inv_umfpack;
+    A_omega2_inv_umfpack.initialize(A_omega2);
+    // SparseDirectUMFPACK C_inv_umfpack;
+    // C_inv_umfpack.initialize(coupling_matrix);
+
+    // Initializing the operators, as described in the introduction
+    auto A1  = linear_operator(A_omega);
+    auto A2  = linear_operator(A_omega2);
+    auto C1t = linear_operator(coupling_matrix);
+    auto C1  = transpose_operator(C1t);
+
+    using BVec = BlockVector<double>;
+    using LinOp = decltype(A1);
+
+    auto AA = block_operator<2, 2, BVec>({{{{A1, C1t}}, {{C1, A2}}}});
+
+    auto A1_inv = linear_operator(A1, A_omega_inv_umfpack);
+    auto A2_inv = linear_operator(A2, A_omega2_inv_umfpack);
+
+    std::array<LinOp, 2> diag_ops = {{A1_inv, A2_inv}};
+    auto diagprecAA               = block_diagonal_operator<2, BVec>(diag_ops);
+
+    SolverControl            solver_control(1000, 1e-12, true, true);
+    SolverGMRES<BVec> solver(solver_control);
+
+    BVec system_rhs;
+    BVec solution;
+    AA.reinit_domain_vector(system_rhs, false);
+    AA.reinit_range_vector(solution, false);
+
+    // solution = 1.0;
+    // system_rhs = AA*solution;
+    // deallog << "1: " << solution.l2_norm() << std::endl;
+    // deallog << "A*1 = " << system_rhs.l2_norm() << std::endl;
+
+    // solution = diagprecAA * system_rhs; 
+    // deallog << "diagAinv * (A*1) = " << solution.l2_norm() << std::endl
+    // << "A1 norm: " << A_omega.l1_norm() << std::endl
+    // << "A2 norm: " << A_omega2.l1_norm() << std::endl
+    // << "Coupling norm: " << coupling_matrix.l1_norm() << std::endl;
+
+    system_rhs.block(0) = rhs_omega;
+    system_rhs.block(1) = rhs_omega2;
+    deallog << "Rhs norm: " << system_rhs.l2_norm() << std::endl;
+
+    solver.solve(AA, solution, system_rhs, diagprecAA);
+
+    u_omega = solution.block(0);
+    u_omega2 = solution.block(1);
+
+    constraints.distribute(u_omega);
+    constraints2.distribute(u_omega2);
 }
 
 // template <int dim>
@@ -884,12 +1008,15 @@ void Step6<dim>::run()
 
       setup_system_omega();
       setup_system_omega2();
+      setup_coupling();
 
       assemble_system_omega();
       assemble_system_omega2();
+      assemble_coupling_system();
 
-      solve_u1();
-      solve_u2();
+      // solve_u1();
+      // solve_u2();
+      solve_coupling();
 
       estimator1();
       estimator2();
