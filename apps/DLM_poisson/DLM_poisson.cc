@@ -190,7 +190,9 @@ private:
   Vector<double> error_per_cell_omega;
   Vector<double> error_per_cell_omega2;
   
-  
+  // coefficient_omega cannot be equal to coefficient_omega2
+  // for elker condition coefficient_omega2 must be stricktly grater than coefficient_omega
+  // results shows that in some cases this condition can be weaken
   double coefficient_omega = 1.0;
   double rhs1              = 1.0;
   // const unsigned int degree_omega;
@@ -207,10 +209,17 @@ private:
 
 
 // template <int dim>
-// double rhs_1(const Point<dim> &p)
-
+// double rhs1(const Point<dim> &p)
 // {
-//   return Functions::CosineFunction<dim>;
+//   // return std::sin(p);
+//   return 1;
+// }
+
+// template <int dim>
+// double rhs2(const Point<dim> &p)
+// {
+//   // return std::sin(p);
+//   return 1;
 // }
 
 template <int dim>
@@ -273,6 +282,7 @@ void Step6<dim>::setup_system_omega()
   u_omega.reinit(omega_dh.n_dofs());
   rhs_omega.reinit(omega_dh.n_dofs());
   error_per_cell_omega.reinit(triangulation_omega.n_active_cells());
+
   
   deallog << "Omega dofs: " << omega_dh.n_dofs() << std::endl;
 }
@@ -391,6 +401,29 @@ template <int dim>
     coupling_matrix.reinit(coupling_sparsity);
   }
 
+// template <int dim>
+//   void Step6<dim>::setup_coupling()
+//   {
+//     // TimerOutput::Scope timer_section(monitor, "Setup coupling");
+
+//     QGauss<dim> quad(3);
+
+//     DynamicSparsityPattern dsp(omega_dh.n_dofs(), omega2_dh.n_dofs());
+
+//     NonMatching::create_coupling_sparsity_pattern_with_exact_intersections(const std::vector<std::tuple<triangulation_omega,triangulation_omega2,quad>> &intersections_info,
+//                                                                             omega_dh,
+//                                                                             omega2_dh,
+//                                                                             dsp,
+//                                                                             constraints,
+//                                                                             ComponentMask(),    // for coupling  u_omega
+//                                                                             ComponentMask(std::vector<bool>{false,true}), //with lambda
+//                                                                             // StaticMappingQ1<dim>::mapping,
+//                                                                             constraints2); 
+    
+//     coupling_sparsity.copy_from(dsp);
+//     coupling_matrix.reinit(coupling_sparsity);
+//   }
+
 template <int dim>
 void Step6<dim>::assemble_system_one_cell_omega(
   const typename DoFHandler<dim>::active_cell_iterator &  cell,
@@ -416,18 +449,18 @@ void Step6<dim>::assemble_system_one_cell_omega(
       for (const unsigned int i : fe_values.dof_indices())
         for (const unsigned int j : fe_values.dof_indices())
           {cell_matrix(i, j) +=
-            (coefficient_omega *                            // a(x_q)
-              fe_values.shape_grad(i, q_index) *       // grad phi_i(x_q)
-              fe_values.shape_grad(j, q_index) *       // grad phi_j(x_q)
-              fe_values.JxW(q_index));                 // dx
+            (coefficient_omega *                              // a(x_q)
+              fe_values.shape_grad(i, q_index) *              // grad phi_i(x_q)
+              fe_values.shape_grad(j, q_index) *              // grad phi_j(x_q)
+              fe_values.JxW(q_index));                        // dx
           cell_mass_matrix(i, j) +=
-            ( fe_values.shape_value(i, q_index) *       // phi_i(x_q)
-              fe_values.shape_value(j, q_index) *       // phi_j(x_q)
-              fe_values.JxW(q_index));                 // dx
+            ( fe_values.shape_value(i, q_index) *             // phi_i(x_q)
+              fe_values.shape_value(j, q_index) *             // phi_j(x_q)
+              fe_values.JxW(q_index));                        // dx
               }
       for (const unsigned int i : fe_values.dof_indices())
         cell_rhs(i) += (fe_values.shape_value(i, q_index) *   // phi_i(x_q)
-                        rhs1 *                                 // f(x)
+                        rhs1 *                                // f(x)
                         fe_values.JxW(q_index));              // dx
     }
 }
@@ -457,36 +490,35 @@ void Step6<dim>::assemble_system_one_cell_omega2(
       for (const unsigned int i : fe_values.dof_indices())
         for (const unsigned int j : fe_values.dof_indices())
           {cell_matrix(i, j) +=
-              (((coefficient_omega2-coefficient_omega) *          // b2(x_q)-b(x_q)
-                  fe_values[primal].gradient(i, q_index) *        // grad phi_i(x_q)_omega2
-                  fe_values[primal].gradient(j, q_index))         // grad phi_j(x_q)_omega2
+              (((coefficient_omega2-coefficient_omega) *            // b2(x_q)-b(x_q)
+                  fe_values[primal].gradient(i, q_index) *          // grad phi_i(x_q)_omega2
+                  fe_values[primal].gradient(j, q_index))           // grad phi_j(x_q)_omega2
 
-                -(fe_values[primal].value(i, q_index) *           // grad phi_i(x_q)_omega2
-                  fe_values[multiplier].value(j, q_index) )       // grad phi_j(x_q)_omega
+                -(fe_values[primal].value(i, q_index) *             // grad phi_i(x_q)_omega2
+                  fe_values[multiplier].value(j, q_index) )         // grad phi_j(x_q)_omega
 
-                -(fe_values[multiplier].value(i, q_index) *       // grad phi_i(x_q)_omega
-                  fe_values[primal].value(j, q_index) )           // grad phi_j(x_q)_omega2
+                -(fe_values[multiplier].value(i, q_index) *         // grad phi_i(x_q)_omega
+                  fe_values[primal].value(j, q_index) )             // grad phi_j(x_q)_omega2
 
-              )* fe_values.JxW(q_index)   ;                       // dx
+              )* fe_values.JxW(q_index)   ;                         // dx
 
           cell_mass_matrix(i,j) +=
-              ( (fe_values[primal].value(i, q_index) *            // phi_i(x_q)
-                fe_values[primal].value(j, q_index))              // phi_j(x_q)
+              ( (fe_values[primal].value(i, q_index) *              // phi_i(x_q)
+                fe_values[primal].value(j, q_index))                // phi_j(x_q)
 
-              +(fe_values[multiplier].value(i, q_index) *         // phi_i(x_q)
-                fe_values[multiplier].value(j, q_index))          // phi_j(x_q)
+              +(fe_values[multiplier].value(i, q_index) *           // phi_i(x_q)
+                fe_values[multiplier].value(j, q_index))            // phi_j(x_q)
 
-              )*fe_values.JxW(q_index)  ;                         // dx                 
+              )*fe_values.JxW(q_index)  ;                           // dx                 
             }
 
 
       for (const unsigned int i : fe_values.dof_indices())
-        cell_rhs(i) += ((fe_values[primal].value(i, q_index) *   // phi_i(x_q)_onega2
-                        (rhs2-rhs1))                             // f2(x)-f1(x)
-
-                +(fe_values[multiplier].value(i, q_index) *     // phi_i(x_q)_onega2
-                        (0.0))                                  // zero
-         ) * fe_values.JxW(q_index);                            //dx
+        cell_rhs(i) += ((fe_values[primal].value(i, q_index) *      // phi_i(x_q)_onega2
+                        (rhs2-rhs1))                                // f2(x)-f1(x)
+                // +(fe_values[multiplier].value(i, q_index) *      // phi_i(x_q)_onega2
+                //         (0.0))                                   // zero
+         ) * fe_values.JxW(q_index);                                //dx
     }
 }
 
@@ -927,38 +959,162 @@ void Step6<dim>::assemble_coupling_system()
                                             constraints2);
 }
 
-template <int dim>
-void Step6<dim>::solve_u1()
-{
-  SolverControl            solver_control(1000, 1e-12);
-  SolverCG<Vector<double>> solver(solver_control);
 
-  PreconditionSSOR<SparseMatrix<double>> preconditioner;
-  preconditioner.initialize(A_omega, 1.2);
+// template <int dim>
+// void Step6<dim>::solve_u1()
+// {
+//   SolverControl            solver_control(1000, 1e-12);
+//   SolverCG<Vector<double>> solver(solver_control);
 
-  solver.solve(A_omega, u_omega, rhs_omega, preconditioner);
+//   PreconditionSSOR<SparseMatrix<double>> preconditioner;
+//   preconditioner.initialize(A_omega, 1.2);
 
-  constraints.distribute(u_omega);
-}
+//   solver.solve(A_omega, u_omega, rhs_omega, preconditioner);
 
-template <int dim>
-void Step6<dim>::solve_u2()
-{
-  // SolverControl            solver_control(1000, 1e-12);
-  // SolverCG<Vector<double>> solver(solver_control);
+//   constraints.distribute(u_omega);
+// }
 
-  // PreconditionSSOR<SparseMatrix<double>> preconditioner2;
-  // preconditioner2.initialize(B_omega2, 1.2);
-  SparseDirectUMFPACK solver;
-  solver.initialize(B_omega2);
-  solver.vmult(u_omega2, rhs_omega2);
-  // solver.solve(B_omega2, u_omega2, rhs_omega2, preconditioner2);
+// template <int dim>
+// void Step6<dim>::solve_u2()
+// {
+//   // SolverControl            solver_control(1000, 1e-12);
+//   // SolverCG<Vector<double>> solver(solver_control);
 
-  constraints2.distribute(u_omega2);
-  deallog << "u_omega2 L_infinity norm = " << u_omega2.linfty_norm() << "(u2 lambda)" << std::endl;
-  deallog << "u_omega2 L_2 norm = " << u_omega2.l2_norm() << "(u2 lambda)" << std::endl;
+//   // PreconditionSSOR<SparseMatrix<double>> preconditioner2;
+//   // preconditioner2.initialize(B_omega2, 1.2);
+//   SparseDirectUMFPACK solver;
+//   solver.initialize(B_omega2);
+//   solver.vmult(u_omega2, rhs_omega2);
+//   // solver.solve(B_omega2, u_omega2, rhs_omega2, preconditioner2);
 
-}
+//   constraints2.distribute(u_omega2);
+//   deallog << "u_omega2 L_infinity norm = " << u_omega2.linfty_norm() << "(u2 lambda)" << std::endl;
+//   deallog << "u_omega2 L_2 norm = " << u_omega2.l2_norm() << "(u2 lambda)" << std::endl;
+
+// }
+
+
+// template <int dim>
+// void Step6<dim>::solve_u1()
+// {
+//     // SparseDirectUMFPACK A_omega_inv_umfpack;
+//     // A_omega_inv_umfpack.initialize(A_omega);
+//     // SparseDirectUMFPACK B_omega2_inv_umfpack;
+//     // B_omega2_inv_umfpack.initialize(B_omega2);
+//     SparseDirectUMFPACK M_omega_inv_umfpack;
+//     M_omega_inv_umfpack.initialize(M_omega);
+//     SparseDirectUMFPACK M_omega2_inv_umfpack;
+//     M_omega2_inv_umfpack.initialize(M_omega2);
+    
+//     auto A1    = linear_operator(A_omega);
+//     auto M1    = linear_operator(M_omega);
+//     auto B     = linear_operator(B_omega2);
+//     auto M2    = linear_operator(M_omega2);
+//     auto C1t   = linear_operator(coupling_matrix);
+//     // auto F1   = linear_operator(rhs_omega);
+//     // auto F2   = linear_operator(rhs_omega2);
+//     auto C1    = transpose_operator(C1t);
+//     const auto &F1 = rhs_omega;
+//     const auto &F2 = rhs_omega2;
+
+
+//     using BVec = BlockVector<double>;
+//     using LinOp = decltype(A1);
+
+//     auto M1_inv  = linear_operator(M1 , M_omega_inv_umfpack);
+//     auto M2_inv  = linear_operator(M2 , M_omega2_inv_umfpack);
+//     std::array<LinOp, 2> diag_MM = {{M1_inv, M2_inv}};
+//     auto MM                      = block_diagonal_operator<2, BVec>(diag_MM);
+//     auto CC                      = block_operator<2, 2, BVec>({{{{0.0* A1, C1t}}, {{C1, 0.0 *B}}}});
+
+//     auto AA = block_operator<2, 2, BVec>({{{{A1, C1t}}, {{C1, B}}}});
+
+//     // BVec system_rhs;
+//     BVec solution;
+//     BVec solution_prime;
+//     // AA.reinit_domain_vector(system_rhs, false);
+//     AA.reinit_range_vector(solution, false);
+//     AA.reinit_range_vector(solution_prime, false);
+
+//     auto &u_omega = solution.block(0);
+//     auto &u_omega2 = solution.block(1);
+//     // system_rhs.block(0) = rhs_omega;
+//     // system_rhs.block(1) = rhs_omega2;
+
+ 
+//     ReductionControl         reduction_control_A1(2000, 1.0e-18, 1.0e-10);
+//     SolverCG<Vector<double>> solver_A1(reduction_control_A1);
+//     PreconditionJacobi<SparseMatrix<double>> preconditioner_A1;
+ 
+//     preconditioner_A1.initialize(A_omega);
+ 
+//     const auto op_A1_inv = inverse_operator(A1, solver_A1, preconditioner_A1);
+//     // ReductionControl         reduction_control_B(2000, 1.0e-18, 1.0e-10);
+//     // SolverCG<Vector<double>> solver_B(reduction_control_B);
+//     // PreconditionJacobi<SparseMatrix<double>> preconditioner_B;
+ 
+//     // preconditioner_B.initialize(B_omega2);
+ 
+//     // const auto op_B_inv = inverse_operator(B, solver_B, preconditioner_B);
+ 
+//     const auto op_S = B - ( C1 * op_A1_inv * C1t ); //S is a 2 by 2
+//     const auto op_aS = B - ( C1 * linear_operator(preconditioner_A1) * C1t);
+//     // const auto op_aS = linear_operator(preconditioner_B) - ( C1 * linear_operator(preconditioner_A1) * C1t);
+ 
+//     IterationNumberControl   iteration_number_control_aS(30, 1.e-18);
+//     SolverCG<Vector<double>> solver_aS(iteration_number_control_aS);
+ 
+//     const auto preconditioner_S = inverse_operator(op_aS, solver_aS, PreconditionIdentity());
+ 
+//     const auto schur_rhs = F2 - (C1 * op_A1_inv * F1);
+ 
+//     SolverControl            solver_control_S(2000, 1.e-12);
+//     SolverCG<Vector<double>> solver_S(solver_control_S);
+ 
+//     const auto op_S_inv = inverse_operator(op_S, solver_S, preconditioner_S);
+
+
+ 
+//     u_omega2 = op_S_inv * schur_rhs;
+ 
+//     std::cout << solver_control_S.last_step()
+//               << " CG Schur complement iterations to obtain convergence."
+//               << std::endl;
+ 
+//     u_omega = op_A1_inv * (F1 - C1 * u_omega2);
+
+//     // u_omega = solution.block(0);
+//     // u_omega2 = solution.block(1);
+//     // deallog << "sol norm: " << solution.linfty_norm() << std::endl;
+//     constraints.distribute(u_omega);
+//     constraints2.distribute(u_omega2);
+
+//     solution.block(0)= u_omega;
+//     solution.block(1)= u_omega2;
+
+//     solution_prime = MM *  CC * solution;
+//     u_omega_prime = solution_prime.block(1);
+//     u_omega2_prime = solution_prime.block(0);
+// }
+
+// template <int dim>
+// void Step6<dim>::solve_u2()
+// {
+//   // SolverControl            solver_control(1000, 1e-12);
+//   // SolverCG<Vector<double>> solver(solver_control);
+
+//   // PreconditionSSOR<SparseMatrix<double>> preconditioner2;
+//   // preconditioner2.initialize(B_omega2, 1.2);
+//   SparseDirectUMFPACK solver;
+//   solver.initialize(B_omega2);
+//   solver.vmult(u_omega2, rhs_omega2);
+//   // solver.solve(B_omega2, u_omega2, rhs_omega2, preconditioner2);
+
+//   constraints2.distribute(u_omega2);
+//   deallog << "u_omega2 L_infinity norm = " << u_omega2.linfty_norm() << "(u2 lambda)" << std::endl;
+//   deallog << "u_omega2 L_2 norm = " << u_omega2.l2_norm() << "(u2 lambda)" << std::endl;
+
+// }
 
 template <int dim>
 void Step6<dim>::solve()
@@ -990,12 +1146,15 @@ void Step6<dim>::solve()
     auto B_inv   = linear_operator(B  , B_omega2_inv_umfpack);
     auto M1_inv  = linear_operator(M1 , M_omega_inv_umfpack);
     auto M2_inv  = linear_operator(M2 , M_omega2_inv_umfpack);
-    // const auto S     = A1 - ( C1t * B_inv * C1); 
-    // // SparseDirectUMFPACK S_inv_umfpack;
-    // // S_inv_umfpack.initialize(S);
-    // auto S_inv  = inverse_operator(S);
+
+    // const auto S     = B - ( C1 * A1_inv * C1t ); //S is a 2 by 2
+
+    // ReductionControl         schur_solver_control(2000, 1.0e-18, 1.0e-10);
+    // SolverCG<Vector<double>> solver_cg(schur_solver_control);
+    // auto S_inv = inverse_operator(S, solver_cg, PreconditionIdentity());
 
 
+    //  auto X  = -1.0   *   C1  * A1_inv ;
      auto X  = -1.0 * B_inv  *   C1  * A1_inv ;
     //  auto X2 = -1.0 * A1_inv *   C1t  * B_inv ;
      auto low_tri_prec                      = block_operator<2, 2, BVec>({{{{A1_inv, 0.0 * C1t}}, {{X, B_inv}}}});
@@ -1014,7 +1173,7 @@ void Step6<dim>::solve()
     auto MM                      = block_diagonal_operator<2, BVec>(diag_MM);
     auto CC                      = block_operator<2, 2, BVec>({{{{0.0* A1, C1t}}, {{C1, 0.0 *B}}}});
 
-    SolverControl            solver_control(2000, 1e-12);
+    SolverControl            solver_control(1000, 1e-12);
     SolverGMRES<BVec> solver(solver_control);
 
     BVec system_rhs;
@@ -1053,9 +1212,14 @@ void Step6<dim>::solve()
     // solver.solve(AA, solution, system_rhs, sur_prec);
     // solver.solve(AA, solution, system_rhs, up_tri_prec);
     // solver.solve(AA, solution, system_rhs, diagprecAA);
+    // const auto schur_rhs = rhs_omega2 - (C1 * A1_inv * rhs_omega);
 
     u_omega = solution.block(0);
     u_omega2 = solution.block(1);
+
+    // u_omega2 = S_inv * schur_rhs;
+    // u_omega = A1_inv * (rhs_omega - (C1t * u_omega2));
+
     // deallog << "sol norm: " << solution.linfty_norm() << std::endl;
     constraints.distribute(u_omega);
     constraints2.distribute(u_omega2);
@@ -1233,9 +1397,9 @@ void Step6<dim>::run()
       if (cycle == 0)
       {
         make_grid_omega();
-        triangulation_omega.refine_global(3);
+        triangulation_omega.refine_global(2);
         make_grid_omega2();
-        triangulation_omega2.refine_global(3);
+        triangulation_omega2.refine_global(1);
       }
       else
       {
